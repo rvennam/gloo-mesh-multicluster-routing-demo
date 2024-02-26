@@ -26,7 +26,7 @@ We'll use meshctl to install Gloo Mesh for demo purposes. In production, you wou
 
 ```
 meshctl install --register \
-  --set common.cluster=$CLUSTER_NAME \
+  --set common.cluster=$CLUSTER1 \
   --set glooMgmtServer.serviceType=LoadBalancer \
   --set telemetryGateway.enabled=true \
   --set istioInstallations.enabled=false \
@@ -510,3 +510,43 @@ EOF
 ```
 Voila! You now have ingress gateways on both clusters routing across frontend applications on both clusters!
 ![Alt text](images/graph.png)
+
+# Locality Load Balancing
+
+```
+kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
+apiVersion: resilience.policy.gloo.solo.io/v2
+kind: FailoverPolicy
+metadata:
+  name: failover
+  namespace: web-team
+spec:
+  applyToDestinations:
+  - kind: VIRTUAL_DESTINATION
+    selector:
+      namespace: web-team
+  config:
+    # enable default locality based load balancing
+    localityMappings: []
+EOF
+```
+
+```
+kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
+apiVersion: resilience.policy.gloo.solo.io/v2
+kind: OutlierDetectionPolicy
+metadata:
+  name: outlier-detection
+  namespace: web-team
+spec:
+  applyToDestinations:
+  - kind: VIRTUAL_DESTINATION
+    selector:
+      namespace: web-team
+  config:
+    consecutiveErrors: 2
+    interval: 5s
+    baseEjectionTime: 15s
+    maxEjectionPercent: 100
+EOF
+```
