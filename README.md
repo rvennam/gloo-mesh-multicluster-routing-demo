@@ -3,10 +3,8 @@
 export CLUSTER_CONTEXT1=gke_field-engineering-us_us-central1-c_rvennam-vddemo-1
 export CLUSTER_CONTEXT2=gke_field-engineering-us_us-central1-c_rvennam-vddemo-2
 
-
 export CLUSTER1=cluster1
 export CLUSTER2=cluster2
-
 
 export GLOO_MESH_LICENSE_KEY=
 export GLOO_VERSION=2.5.1
@@ -16,6 +14,9 @@ export GLOO_VERSION=2.5.1
 curl -sL https://run.solo.io/meshctl/install | GLOO_MESH_VERSION=v$GLOO_VERSION sh -
 export PATH=$HOME/.gloo-mesh/bin:$PATH
 ```
+
+![Alt text](overview.png)
+
 # Install Gloo Mesh Management & Agent on Cluster 1
 
 ```
@@ -27,6 +28,7 @@ meshctl install --register \
   --set licensing.glooMeshLicenseKey=$GLOO_MESH_LICENSE_KEY
 ```
 
+Get the IP address of the Mgmt server and the telemetry gateway
 ```
 export TELEMETRY_GATEWAY_IP=$(kubectl get svc -n gloo-mesh gloo-telemetry-gateway  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 export TELEMETRY_GATEWAY_PORT=$(kubectl -n gloo-mesh get service gloo-telemetry-gateway -o jsonpath='{.spec.ports[?(@.name=="otlp")].port}')
@@ -45,7 +47,7 @@ meshctl cluster register $CLUSTER2 \
 
 # Install Istio on both clusters using ILM and GLM
 
-Istiod on cluster1:
+Install Istiod on cluster1:
 ```
 kubectl apply --context ${CLUSTER_CONTEXT1} -f - <<EOF
 apiVersion: admin.gloo.solo.io/v2
@@ -95,7 +97,7 @@ spec:
             enabled: false
 EOF
 ```
-Istiod on cluster2:
+Install Istiod on cluster2:
 ```
 kubectl apply --context ${CLUSTER_CONTEXT1} -f - <<EOF
 apiVersion: admin.gloo.solo.io/v2
@@ -145,7 +147,7 @@ spec:
             enabled: false
 EOF
 ```
-Install Ingress and EastWest Gateways on cluster1:
+Install Ingress and East-West Gateways on cluster1:
 
 ```
 kubectl apply --context ${CLUSTER_CONTEXT1} -f - <<EOF
@@ -201,10 +203,27 @@ spec:
                     value: "sni-dnat"
                   - name: ISTIO_META_REQUESTED_NETWORK_VIEW
                     value: cluster1
+                service:
+                  type: LoadBalancer
+                  selector:
+                    istio: eastwestgateway
+                  # Default ports
+                  ports:
+                    # Port for health checks on path /healthz/ready.
+                    # For AWS ELBs, this port must be listed first.
+                    - name: status-port
+                      port: 15021
+                      targetPort: 15021
+                    # Port for multicluster mTLS passthrough
+                    # Gloo looks for this default name 'tls' on a gateway
+                    # Required for Gloo east/west routing
+                    - name: tls
+                      port: 15443
+                      targetPort: 15443
 EOF
 ```
 
-Install on cluster2:
+Install Ingress and East-West Gateways on cluster2:
 ```
 kubectl apply --context ${CLUSTER_CONTEXT1} -f - <<EOF
 apiVersion: admin.gloo.solo.io/v2
@@ -259,10 +278,27 @@ spec:
                     value: "sni-dnat"
                   - name: ISTIO_META_REQUESTED_NETWORK_VIEW
                     value: cluster2
+                service:
+                  type: LoadBalancer
+                  selector:
+                    istio: eastwestgateway
+                  # Default ports
+                  ports:
+                    # Port for health checks on path /healthz/ready.
+                    # For AWS ELBs, this port must be listed first.
+                    - name: status-port
+                      port: 15021
+                      targetPort: 15021
+                    # Port for multicluster mTLS passthrough
+                    # Gloo looks for this default name 'tls' on a gateway
+                    # Required for Gloo east/west routing
+                    - name: tls
+                      port: 15443
+                      targetPort: 15443
 EOF
 ```
 
-# Unify trust
+# Unify trust on both clusters
 ```
 cat << EOF | kubectl --context ${CLUSTER_CONTEXT1} apply -f -
 apiVersion: admin.gloo.solo.io/v2
@@ -283,16 +319,18 @@ Cluster 1:
 ```
 
 kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/solo-io/solo-cop/main/workshops/gloo-mesh-demo/install/online-boutique/backend-apis.yaml
-kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/solo-io/solo-cop/main/workshops/gloo-mesh-demo/install/online-boutique/web-ui.yaml
+kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/rvennam/gloo-mesh-multicluster-routing-demo/main/web-ui-cluster1.yaml
 ```
 
 Cluster 2:
 ```
 kubectl apply --context $CLUSTER_CONTEXT2 -f https://raw.githubusercontent.com/solo-io/solo-cop/main/workshops/gloo-mesh-demo/install/online-boutique/backend-apis.yaml
-kubectl apply --context $CLUSTER_CONTEXT2 -f https://raw.githubusercontent.com/solo-io/solo-cop/main/workshops/gloo-mesh-demo/install/online-boutique/web-ui.yaml
+kubectl apply --context $CLUSTER_CONTEXT2 -f https://raw.githubusercontent.com/rvennam/gloo-mesh-multicluster-routing-demo/main/web-ui-cluster2.yaml
 ```
 
 # Create Workspaces
+
+![Alt text](images/workspaces.png)
 ```
 kubectl create namespace ops-team --context $CLUSTER_CONTEXT1
 kubectl create namespace web-team --context $CLUSTER_CONTEXT1
@@ -347,6 +385,7 @@ kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/s
 
 # Expose the web-ui app on both clusters
 
+Set up a HTTP listener for the ingress gateway in both the clusters:
 ```
 kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
 apiVersion: networking.gloo.solo.io/v2
@@ -370,6 +409,7 @@ spec:
             workspace: web-team
 EOF
 ```
+
 Apply the RouteTable for the web team to define where traffic for the gateway should go.
 ```
 kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
@@ -397,3 +437,67 @@ spec:
               number: 80
 EOF
 ```
+
+Each ingress gateway now routes to the local frontend service. But if the frontend fails, traffic can not failover! For that, we need multi-cluster routing using VirtualDestinations!
+
+# Virtual Destination for frontend service
+
+![Alt text](images/vd.png)
+
+```
+kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: VirtualDestination
+metadata:
+  name: frontend
+  namespace: web-team
+spec:
+  hosts:
+  - frontend.web-ui-team.solo-io.mesh
+  services:
+  - labels:
+      app: frontend
+  ports:
+  - number: 80
+    protocol: HTTP
+    targetPort:
+      name: http
+EOF
+```
+
+Now, let's update the previous RouteTable to now send traffic to this VirtualDestination instead:
+
+```
+kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
+apiVersion: networking.gloo.solo.io/v2
+kind: RouteTable
+metadata:
+  name: frontend
+  namespace: web-team
+  labels:
+    lab: failover
+spec:
+  hosts:
+    - '*'
+  virtualGateways:
+    - name: north-south-gw
+      namespace: ops-team
+      cluster: cluster1
+  workloadSelectors: []
+  http:
+    - name: frontend
+      labels:
+        virtual-destination: frontend
+        oauth: "true"
+      forwardTo:
+        destinations:
+          - ref:
+              name: frontend
+              namespace: web-team
+            kind: VIRTUAL_DESTINATION
+            port:
+              number: 80
+EOF
+```
+Voila! You now have ingress gateways on both clusters routing across frontend applications on both clusters!
+![Alt text](images/graph.png)
