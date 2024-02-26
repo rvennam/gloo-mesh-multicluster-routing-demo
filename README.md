@@ -10,6 +10,7 @@ export GLOO_MESH_LICENSE_KEY=
 export GLOO_VERSION=2.5.1
 ```
 
+Download `meshctl`
 ```
 curl -sL https://run.solo.io/meshctl/install | GLOO_MESH_VERSION=v$GLOO_VERSION sh -
 export PATH=$HOME/.gloo-mesh/bin:$PATH
@@ -18,6 +19,10 @@ export PATH=$HOME/.gloo-mesh/bin:$PATH
 ![Alt text](images/overview.png)
 
 # Install Gloo Mesh Management & Agent on Cluster 1
+
+We'll use cluster1 as both our management and workload cluster. Typically, we recomment running the management in a separate cluster.
+
+We'll use meshctl to install Gloo Mesh for demo purposes. In production, you would use helm and install the mgmt and agent separately.
 
 ```
 meshctl install --register \
@@ -28,7 +33,7 @@ meshctl install --register \
   --set licensing.glooMeshLicenseKey=$GLOO_MESH_LICENSE_KEY
 ```
 
-Get the IP address of the Mgmt server and the telemetry gateway
+Get the IP address of the mgmt server and the telemetry gateway. These will be needed for the agent in cluster 2 to connect to it.
 ```
 export TELEMETRY_GATEWAY_IP=$(kubectl get svc -n gloo-mesh gloo-telemetry-gateway  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 export TELEMETRY_GATEWAY_PORT=$(kubectl -n gloo-mesh get service gloo-telemetry-gateway -o jsonpath='{.spec.ports[?(@.name=="otlp")].port}')
@@ -37,6 +42,7 @@ echo $TELEMETRY_GATEWAY_ADDRESS
 ```
 
 # Install Gloo Mesh Agent on Cluster 2
+On cluster2, we don't need the mgmt server. We only need the agent, which will connect to the mgmt server in cluster1. 
 ```
 meshctl cluster register $CLUSTER2 \
   --kubecontext $CLUSTER_CONTEXT1 \
@@ -45,7 +51,7 @@ meshctl cluster register $CLUSTER2 \
   --telemetry-server-address $TELEMETRY_GATEWAY_ADDRESS
 ```
 
-# Install Istio on both clusters using ILM and GLM
+# Install Istio on both clusters using Istio Lifecycle Management (ILM and GLM)
 
 Install Istiod on cluster1:
 ```
@@ -317,7 +323,6 @@ EOF
 # Deploy Online Boutique Sample
 Cluster 1:
 ```
-
 kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/solo-io/solo-cop/main/workshops/gloo-mesh-demo/install/online-boutique/backend-apis.yaml
 kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/rvennam/gloo-mesh-multicluster-routing-demo/main/web-ui-cluster1.yaml
 ```
@@ -331,12 +336,15 @@ kubectl apply --context $CLUSTER_CONTEXT2 -f https://raw.githubusercontent.com/r
 # Create Workspaces
 
 ![Alt text](images/workspaces.png)
+
+We'll create these namespaces on cluster1 to store each team's mesh configuration.
 ```
 kubectl create namespace ops-team --context $CLUSTER_CONTEXT1
 kubectl create namespace web-team --context $CLUSTER_CONTEXT1
 kubectl create namespace backend-apis-team --context $CLUSTER_CONTEXT1
 ```
 
+Create the workspaces:
 ```
 kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
 apiVersion: admin.gloo.solo.io/v2
@@ -385,7 +393,9 @@ kubectl apply --context $CLUSTER_CONTEXT1 -f https://raw.githubusercontent.com/s
 
 # Expose the web-ui app on both clusters
 
-Set up a HTTP listener for the ingress gateway in both the clusters:
+![Alt text](images/expose-frontend.png)
+
+Set up a HTTP (80) listener on the ingress gateway in both clusters:
 ```
 kubectl --context ${CLUSTER_CONTEXT1} apply -f - <<EOF
 apiVersion: networking.gloo.solo.io/v2
@@ -395,7 +405,7 @@ metadata:
   namespace: ops-team
 spec:
   workloads:
-    - selector:
+    - selector: # Select the gateway across both clusters
         labels:
           istio: ingressgateway
         namespace: istio-gateways
@@ -431,7 +441,7 @@ spec:
       forwardTo:
         destinations:
           - ref:
-              name: frontend
+              name: frontend # The service where traffic should go to
               namespace: web-ui
             port:
               number: 80
@@ -488,11 +498,10 @@ spec:
     - name: frontend
       labels:
         virtual-destination: frontend
-        oauth: "true"
       forwardTo:
         destinations:
           - ref:
-              name: frontend
+              name: frontend # VirtualDestination for frontend
               namespace: web-team
             kind: VIRTUAL_DESTINATION
             port:
