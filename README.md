@@ -15,7 +15,7 @@ curl -sL https://run.solo.io/meshctl/install | GLOO_MESH_VERSION=v$GLOO_VERSION 
 export PATH=$HOME/.gloo-mesh/bin:$PATH
 ```
 
-![Alt text](overview.png)
+![Alt text](images/overview.png)
 
 # Install Gloo Mesh Management & Agent on Cluster 1
 
